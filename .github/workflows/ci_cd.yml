@@ -95,3 +95,133 @@ jobs:
       - name: Build frontend
         run: npm run build --no-progress 2>&1 >/dev/null || true # Mutes ESlint warnings
         working-directory: frontend
+
+  cypress:
+    name: Functional Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: measdb
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+        options: >-
+          --health-cmd "pg_isready -U $${POSTGRES_USER}"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- BACKEND ---
+      - name: Setup Java (backend)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '20'
+
+      - name: Make Maven Wrapper executable
+        run: chmod +x mvnw
+        working-directory: backend
+
+      - name: Build backend (package, no tests)
+        working-directory: backend
+        run: ./mvnw -B clean package -DskipTests
+
+      - name: Start backend (background) + logs
+        working-directory: backend
+        env:
+          QUARKUS_DATASOURCE_REACTIVE_URL: vertx-reactive:postgresql://localhost:5432/measdb
+          QUARKUS_DATASOURCE_USERNAME: ${{ secrets.POSTGRES_USER }}
+          QUARKUS_DATASOURCE_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          QUARKUS_HIBERNATE_ORM_DATABASE_GENERATION: drop-and-create
+          QUARKUS_HTTP_PORT: '8280'
+        run: |
+          nohup java -jar target/quarkus-app/quarkus-run.jar > ../backend.log 2>&1 &
+          echo $! > ../backend.pid
+
+      - name: Wait for Quarkus (8280) – /api/v1/hello
+        run: |
+          echo "Waiting for Quarkus http://localhost:8280/api/v1/hello ..."
+          for i in {1..90}; do
+            if curl -fsS http://localhost:8280/api/v1/hello >/dev/null; then
+              echo "Backend is up."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Backend did not start in time. Last 200 log lines:"
+          tail -n 200 backend.log || true
+          exit 1
+
+      # --- FRONTEND ---
+      - name: Setup Node.js (frontend)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Start frontend (background)
+        working-directory: frontend
+        run: |
+          nohup npm run start > ../frontend.log 2>&1 &
+          echo $! > ../frontend.pid
+
+      - name: Wait for React (3000)
+        run: |
+          echo "Waiting for React http://localhost:3000 ..."
+          for i in {1..90}; do
+            if curl -fsSI http://localhost:3000 >/dev/null; then
+              echo "Frontend is up."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Frontend did not start in time. Last 200 log lines:"
+          tail -n 200 frontend.log || true
+          exit 1
+
+      # --- CYPRESS (ROOT) ---
+      - name: Setup Node.js (root)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install deps (root)
+        working-directory: .
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Run Cypress tests
+        working-directory: .
+        run: npx cypress run
+        env:
+          CYPRESS_BASE_URL: http://localhost:3000
+          # CYPRESS_RECORD_KEY: ${{ secrets.CYPRESS_RECORD_KEY }}  # če uporabljaš Cypress Dashboard
+
+      # --- LOGI / ARTEFAKTI ---
+      - name: Upload Cypress artifacts (screenshots & videos)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypress-artifacts
+          path: |
+            cypress/screenshots/**
+            cypress/videos/**
