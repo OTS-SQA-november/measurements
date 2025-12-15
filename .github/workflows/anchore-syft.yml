@@ -1,16 +1,3 @@
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
-
-# This workflow checks out code, builds an image, performs a container image
-# scan with Anchore's Syft tool, and uploads the results to the GitHub Dependency
-# submission API.
-
-# For more information on the Anchore sbom-action usage
-# and parameters, see https://github.com/anchore/sbom-action. For more
-# information about the Anchore SBOM tool, Syft, see
-# https://github.com/anchore/syft
 name: Anchore Syft SBOM scan
 
 on:
@@ -22,18 +9,39 @@ permissions:
   contents: write
 
 jobs:
-  Anchore-Build-Scan:
-    permissions:
-      contents: write # required to upload to the Dependency submission API
+  docker-build-and-scan:
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: write # required for dependency submission
+
     steps:
-    - name: Checkout the code
-      uses: actions/checkout@v4
-    - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag localbuild/testimage:latest
-    - name: Scan the image and upload dependency results
-      uses: anchore/sbom-action@bb716408e75840bbb01e839347cd213767269d4a
-      with:
-        image: "localbuild/testimage:latest"
-        artifact-name: image.spdx.json
-        dependency-snapshot: true
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # 1) Build Quarkus backend
+      - name: Build backend (Maven)
+        working-directory: backend
+        run: ./mvnw -B clean package
+
+      # 2) Build Docker image (IMPORTANT: correct Dockerfile + context)
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t measurements-backend:latest \
+            -f backend/src/main/docker/Dockerfile.jvm \
+            backend
+
+      # 3) Scan Docker image with Anchore Syft
+      - name: Scan image and upload dependency results
+        uses: anchore/sbom-action@bb716408e75840bbb01e839347cd213767269d4a
+        with:
+          image: measurements-backend:latest
+          artifact-name: measurements-backend.spdx.json
+          dependency-snapshot: true
