@@ -43,5 +43,5 @@ jobs:
         uses: anchore/sbom-action@bb716408e75840bbb01e839347cd213767269d4a
         with:
           image: measurements-backend:latest
-          artifact-name: measurements-backend-spdx-json
+          artifact-name: measurements-backend-sbom
           dependency-snapshot: true
